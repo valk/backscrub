@@ -249,7 +249,6 @@ static bool is_number(const std::string &s) {
 }
 
 int main(int argc, char* argv[]) try {
-
 	printf("backscrub version %s\n", _STR(DEEPSEG_VERSION));
 	printf("(c) 2021 by floe@butterbrot.org & contributors\n");
 	printf("https://github.com/floe/backscrub\n");
@@ -261,6 +260,7 @@ int main(int argc, char* argv[]) try {
 	size_t width  = 640;
 	size_t height = 480;
 	const char *back = nullptr; // "images/background.png";
+  const char *backVideo = nullptr; // "video (mp4, avi etc.)";
 	const char *vcam = "/dev/video0";
 	const char *ccam = "/dev/video1";
 	bool flipHorizontal = false;
@@ -298,6 +298,12 @@ int main(int argc, char* argv[]) try {
 		} else if (strncmp(argv[arg], "-b", 2)==0) {
 			if (hasArgument) {
 				back = argv[++arg];
+			} else {
+				showUsage = true;
+			}
+		} else if (strncmp(argv[arg], "-z", 2)==0) {
+			if (hasArgument) {
+				backVideo = argv[++arg];
 			} else {
 				showUsage = true;
 			}
@@ -368,6 +374,11 @@ int main(int argc, char* argv[]) try {
 		}
 	}
 
+	cv::VideoCapture vid(backVideo);
+
+	cv::Mat bg, tmp_frame;
+	int frames = (int) vid.get(cv::CAP_PROP_FRAME_COUNT);
+
 	if (showUsage) {
 		fprintf(stderr, "\n");
 		fprintf(stderr, "usage:\n");
@@ -401,12 +412,20 @@ int main(int argc, char* argv[]) try {
 	printf("flip_v: %s\n", flipVertical ? "yes" : "no");
 	printf("threads:%zu\n", threads);
 	printf("back:   %s\n", back ? back : "(none)");
+	printf("backVideo:   %s\n", backVideo ? backVideo : "(none)");
 	printf("model:  %s\n\n", modelname);
 
-	cv::Mat bg;
 	if (back) {
 		bg = cv::imread(back);
 	}
+
+	if (backVideo) {
+		vid >> tmp_frame;
+		if(!tmp_frame.empty()) {
+			bg = tmp_frame;
+		}
+	}
+
 	if (bg.empty()) {
 		if (back) {
 			printf("Warning: could not load background image, defaulting to green\n");
@@ -440,11 +459,34 @@ int main(int argc, char* argv[]) try {
 	printf("Startup: %ldns\n", diffnanosecs(ti.lastns,ti.bootns));
 
 	bool filterActive = true;
+	int waitMillis = 0;
+	int n_cur_frame = 0;
+
+	cv::Mat resized[frames];
 
 	// mainloop
 	for(bool running = true; running; ) {
 		// grab new frame from cam
 		cap.grab();
+
+    // Cache the frame in the buffer for later use
+    if (!resized[n_cur_frame].empty()) {
+			bg = resized[n_cur_frame];
+		} else {
+			vid >> tmp_frame;
+			if(!tmp_frame.empty()) {
+				bg = tmp_frame;
+			}
+
+			cv::resize(bg,bg,cv::Size(width,height));
+			resized[n_cur_frame] = bg;
+		}
+
+    // Set current frame to the starting frame
+		if (n_cur_frame++ == frames-1 ) {
+		  n_cur_frame = 0;
+		}
+
 		ti.grabns=timestamp();
 		// copy new frame to buffer
 		cap.retrieve(raw);
@@ -500,28 +542,31 @@ int main(int argc, char* argv[]) try {
 		}
 
 		// timing details..
-		printf("main [grab:%9ld retr:%9ld copy:%9ld prep:%9ld mask:%9ld post:%9ld v4l2:%9ld FPS: %5.2f] ai: [wait:%9ld prep:%9ld tflt:%9ld mask:%9ld FPS: %5.2f] \e[K\r",
-			diffnanosecs(ti.grabns,ti.lastns),
-			diffnanosecs(ti.retrns,ti.grabns),
-			diffnanosecs(ti.copyns,ti.retrns),
-			diffnanosecs(ti.prepns,ti.copyns),
-			diffnanosecs(ti.maskns,ti.prepns),
-			diffnanosecs(ti.postns,ti.maskns),
-			diffnanosecs(ti.v4l2ns,ti.postns),
-			1e9/diffnanosecs(ti.v4l2ns,ti.lastns),
-			ai.waitns,
-			ai.prepns,
-			ai.tfltns,
-			ai.maskns,
-			1e9/ai.loopns
-		);
-		fflush(stdout);
+		if (n_cur_frame % 30 == 0) {
+			printf("main [grab:%9ld retr:%9ld copy:%9ld prep:%9ld mask:%9ld post:%9ld v4l2:%9ld FPS: %5.2f] ai: [wait:%9ld prep:%9ld tflt:%9ld mask:%9ld FPS: %5.2f] \e[K\r",
+				diffnanosecs(ti.grabns,ti.lastns),
+				diffnanosecs(ti.retrns,ti.grabns),
+				diffnanosecs(ti.copyns,ti.retrns),
+				diffnanosecs(ti.prepns,ti.copyns),
+				diffnanosecs(ti.maskns,ti.prepns),
+				diffnanosecs(ti.postns,ti.maskns),
+				diffnanosecs(ti.v4l2ns,ti.postns),
+				1e9/diffnanosecs(ti.v4l2ns,ti.lastns),
+				ai.waitns,
+				ai.prepns,
+				ai.tfltns,
+				ai.maskns,
+				1e9/ai.loopns
+			);
+			fflush(stdout);
+		}
+		
 		ti.lastns = timestamp();
 		if (debug < 2) continue;
 
 		cv::Mat test;
 		cv::cvtColor(raw,test,cv::COLOR_YUV2BGR_YUYV);
-		cv::imshow("DeepSeg " _STR(DEEPSEG_VERSION),test);
+		//cv::imshow("DeepSeg " _STR(DEEPSEG_VERSION),test);
 
 		auto keyPress = cv::waitKey(1);
 		switch(keyPress) {
